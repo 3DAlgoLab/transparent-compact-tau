@@ -1,0 +1,55 @@
+[build-system]
+requires = ["uv_build>=0.11.26,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# The distribution name carries the "-tau" suffix (this is the Tau port of
+# `transparent-compact`); the import name stays the shorter, stable one.
+module-name = "transparent_compact"
+module-root = "src"
+
+[project]
+name = "transparent-compact-tau"
+version = "0.1.0"
+description = "Deterministic, losslessly recoverable context compaction for Tau (port of transparent-compact for pi)."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+  # The `session_before_compact` hook, `CompactionEntry.details`, and
+  # `ExtensionContext.entries` are not in any published tau-ai yet: develop
+  # against the local `../tau` checkout (branch `feat/session-before-compact`)
+  # via the path source below, and raise this floor once the seam is released.
+  "tau-ai",
+]
+
+[tool.uv.sources]
+tau-ai = { path = "../tau", editable = true }
+
+[dependency-groups]
+dev = ["pytest>=8.0", "anyio>=4.0", "ruff>=0.9", "mypy>=1.13"]
+
+# Tau extension manifest: lets `tau -e PATH` on this repo root find the entry
+# inside the src layout.
+[tool.tau]
+extensions = ["src/transparent_compact/extension.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+files = ["src/transparent_compact"]
+
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "ANN", "SLF", "RUF"]
+# The checkpoint notation is copied from the ported algorithm: `×N` counts edits
+# and `ℹ pass N` is a real vitest summary shape. Both are deliberate.
+allowed-confusables = ["×", "ℹ"]
