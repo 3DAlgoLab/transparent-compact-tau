@@ -38,7 +38,14 @@ These are non-negotiable; every milestone is checked against them.
   `uv run pytest tests/` = 2291 passed (one pre-existing, timezone-dependent
   TUI failure: `test_tui_tree_labels_filter_timestamps_and_clear`, fails on clean
   `main` too).
-- [ ] No extension code written yet in this repo.
+- [x] **M1–M5 built in this repo** (log in §7): `transcript.py`, `spans.py`,
+      `signature.py`, `cap.py`, `state.py`, `checkpoint.py`, `recovery.py`,
+      `extension.py`; 60 tests (`tests/test_transcript.py`, `tests/test_checkpoint.py`,
+      `tests/test_extension.py`), `ruff` clean, `mypy --strict` clean.
+- [ ] M4's `context_lookup` subagent, M6 (filters/fidelity), and the M2 verbatim
+      self-test are not written.
+- [ ] Nothing has run in the real TUI yet: the end-to-end tests drive `CodingSession`
+      headlessly, and the installed `tau` tool still lacks M0.
 
 ## 2. Tau gaps → core changes (landed in `../tau`, branch `feat/session-before-compact`)
 
@@ -170,9 +177,16 @@ src/transparent_compact/
       `dev-notes/extension-compaction-override.md` (indexed in `dev-notes/README.md`).
 - [ ] Not merged to `main` yet; the extension is developed against the branch.
 
-### M1 — Store A transcript (algorithm Part 1–2)
-- [ ] Branch → ordered entry list (skip label/leaf/custom bookkeeping), entry index for
-      `[N]` addresses, turn-owner map (raw user boundaries).
+### M1 — Store A transcript (algorithm Part 1–2) — *done, as `transcript.py`*
+
+As built: `build_transcript(entries)` renders the raw branch into physical lines
+with an authoritative index (`entry_for_line`, `lines_for_entry`, `entry_range`,
+`render_lines`, `render_entries`, `table_of_contents`, `grep`). Headers are
+`ENTRY <id> (2026-11-03T09:12:04Z)` + `  [User]: …` — Tau entry ids are strings,
+so the address *is* the entry id rather than pi's `[N]`. Images are counted, never
+inlined, and nothing in Store A truncates.
+
+- [x] Branch → ordered entry rendering with a per-entry line index.
 - [ ] Per-entry renderer: `[N] (from B …) [User]: …`, `[Agent] …`,
       `[Tools]: read(...); edit(...)` stubs with prefix/command/suffix records,
       `[Thinking omitted]` for thinking-only turns, `[Custom]: …`.
@@ -180,9 +194,24 @@ src/transparent_compact/
       `[Showing entries X–Y of Z …]`), `grep` (200 matches, case-insensitive,
       line-per-hit), `show_entries`.
 
-### M2 — Mechanical checkpoint (algorithm Part 3)
-- [ ] Span records for the replaced range only; base rebuilt from earlier mech entries
-      (`CompactionEntry.details`) + native Tau compaction entries kept verbatim.
+### M2 — Mechanical checkpoint (algorithm Part 3) — *done, as `checkpoint.py` + `spans.py`*
+
+As built: `collect_base_and_spans` rebuilds the base (opaque model summary, or
+re-rendered mech spans) plus every stored span; `summarize_entries` compresses the
+new span; `build_checkpoint` assembles the envelope. Call/result pairing uses
+`tool_call_id` + `tool_name`, and observation extraction (`signature.py`) was
+re-tuned for Tau's tool output shapes (`details["exit_code"]`, Tau's read/bash
+truncation markers, the `Command exited with code N` status block).
+
+**Gap still owed:** the verbatim self-test below is not implemented. The cap ladder
+today trusts only records that round-trip (`render_tool_line(record) == line`) and
+otherwise carries a line verbatim or omits it whole — never rewrites it — which
+covers the destructive case but not the explicit re-serialize-and-assert check.
+
+- [x] Span records for the replaced range only; base rebuilt from earlier mech entries
+      (`CompactionEntry.details`); native Tau compaction entries stay opaque.
+- [x] Hook returns `{summary, details}`; cancels on a build failure for
+      manual/threshold and defers to Tau's summarizer on overflow.
 - [ ] `[User]:` lines joined with `\n` like Pi; `[Agent]` prose verbatim; tool results
       and thinking dropped from Store B but never from Store A.
 - [ ] Header `**`-joined segments + `**Retained recent context below** — do not answer
@@ -192,34 +221,54 @@ src/transparent_compact/
       silently truncate the checkpoint itself).
 - [ ] Hook: return `{summary, details}`; `cancel` when the cap is aborting (M3).
 
-### M3 — Cap (algorithm Part 4)
-- [ ] Port `capSpans` faithfully: 160-char default previews → 120 → 80 → fold
-      `[Tools]: ` prefixes (only when both adjacent lines are tool-only and mergeable)
-      → destructive (drop non-user content oldest-first, stub user lines
-      `…[truncated +N chars — use context_lookup]`, drop protected-marker-safe rows).
-      Stop at the first rung that fits; never measure the raw history.
+### M3 — Cap (algorithm Part 4) — *done, as `cap.py` + `state.py`*
+
+As built: all six rungs in order (160→120→80→fold `[Tools]: `→remove non-user
+content→stub oversized user lines→drop oldest content), stopping at the first rung
+that fits, with presentation loss (`tightened`) and content loss (`trimmed`) tracked
+separately and reported separately. Budget comes from `context.context_window_tokens`;
+`off` disables it. Budgets parse as `25%` / `80c` / `4t`.
+
+- [ ] `warn` **notifies** rather than prompting. The `ExtensionUi.select` call path
+      exists but has never run against a TUI; headless behaviour is "apply the cap
+      and say so", which keeps compaction working.
+- [ ] Pi's distinct `enforce` mode is not modelled (`on` is the silent variant).
 - [ ] `off` / `enforce` (silent + notification) / `warn` (confirm; refusal cancels
       compaction so the model summarizer can run instead).
 - [ ] Shortening note `**Note:** …` and presentation-loss accounting.
 - [ ] Budget from `context.context_window_tokens`; `off` = no cap.
 
-### M4 — Recovery tools (algorithm Part 5)
-- [ ] `context_list_entries(around_entry, span, include_tools)`
-- [ ] `context_grep(pattern, limit, flags)`
-- [ ] `context_show_entry(entry_from, entry_to)`
-- [ ] `context_lookup(question)` — subagent over Store A with **only** those three tools,
-      its own provider request loop (no CodingSession, no session file), max turns,
-      abort-aware, consecutive-call cap, `lookupModel` override setting.
-- [ ] Descriptions carry the Pi guidance: source = raw branch, `entry N` provenance,
-      "not a file", filesystem rule, pagination note.
+### M4 — Recovery tools (algorithm Part 5) — *partial*
 
-### M5 — Commands + status (algorithm Part 6/7 minimal set)
-- [ ] `/compaction-method [verbatim|summary]` (entry-backed, printed status).
-- [ ] `/cap-compaction [off|percent NN|enforce|warn]`.
-- [ ] `/transparent-compact` status dump (method, cap, spans, checkpoint chars, entries).
-- [ ] Notifications mirroring Pi's strings (compaction summary note, cap warning,
-      mixed-context warning).
-- [ ] session_start: state replay + mixed-context warning.
+As built (`recovery.py`, registered with `tau.register_tool`; parameters use Tau's
+snake_case): three deterministic tools over the **raw branch**, each bounded at
+12 000 chars with an explicit pagination note, all reporting "N of M entries".
+
+- [x] `context_list_entries(around_entry_id, window, include_tools)`.
+- [x] `context_grep(pattern, context_lines, max_matches, entry_id, literal, case_sensitive)`.
+- [x] `context_show_entry(entry_id, to_id, include_tools)` — whole raw entries, uncapped.
+- [ ] `context_lookup(question)` — subagent over Store A with **only** those three
+      tools, its own provider request loop (no `CodingSession`, no second session
+      file), max turns, abort-aware, consecutive-call cap, `lookupModel` override.
+      Copy Tau's provider idiom from `../tau-subagents`
+      (`load_provider_settings` → `resolve_provider_selection` →
+      `create_model_provider`); a child `CodingSession` would write its own session
+      file, which the algorithm explicitly rules out.
+- [x] Descriptions state: source = raw branch, entry-id provenance, "not a file",
+      pagination note, and "prefer your own tools for the working tree".
+
+### M5 — Commands + status (algorithm Part 6/7 minimal set) — *done, as `extension.py`*
+
+- [x] `/compaction-method [verbatim|summary]` (entry-backed, printed status; `mech` /
+      `model` / `tau` as aliases).
+- [x] `/cap-compaction [on|warn|off|<n>%|<n>c|<n>t]`.
+- [x] `/transparent-compact` status dump (version, method, cap, branch vs projected
+      entry counts, checkpoint count, re-renderable spans, base state, tools, usage).
+- [x] Notifications: checkpoint size + share of the window, presentation vs content
+      loss, mixed-context warning, base-over-capacity warning, build-failure error.
+- [ ] No `session_start` replay pass. Every command and hook call re-reads the
+      branch, so correctness does not depend on it; the cost is that pi's startup
+      mixed-context notice does not fire until a compaction happens.
 
 ### M6 — Filters + fidelity (algorithm Part 7–8) — *after M0–M5 are green*
 - [ ] `filterSpans` / `fidelitySpans` ports, filter-revision entries, markers
@@ -278,3 +327,68 @@ src/transparent_compact/
   see the `session_before_compact` seam until rebuilt:
   `cd ../tau && uv tool install --force .` (run from `feat/session-before-compact`),
   or use `uv run tau` from the repo for all development work.
+
+---
+
+## 7. Progress log
+
+### 2026-11-03 — M1–M5 built, M4 partial
+
+Checks run against this tree:
+
+```
+uv run pytest -q                       60 passed
+uv run ruff check src tests            all checks passed
+uv run ruff format --check src tests   all formatted
+uv run mypy                            success, 9 files (strict)
+```
+
+`tests/test_extension.py` is the part worth trusting. It loads **this** extension
+file into a real `CodingSession` (JSONL storage, `FakeProvider`,
+`DEFAULT_COMPACTION_KEEP_RECENT_TOKENS` patched to 1 so the boundary is a real
+span) and asserts the design claims end to end:
+
+- manual compaction produces a checkpoint and issues **no** request carrying
+  `SUMMARIZATION_SYSTEM_PROMPT`; `CompactionEntry.details.kind == "mech-compact"`
+  and Tau's own `provider`/`model`/`usage` attribution fields stay empty;
+- the bash output is gone from `session.messages`, still present in
+  `session.entries`, and `context_grep` → `context_show_entry` recovers it;
+- a second compaction re-renders the first span from its stored record and
+  persists only its own (`details.span`);
+- a 500-char cap emits `trimmed="true"` plus the recovery note while
+  `details.span.lines` keeps the canonical line byte for byte;
+- `/compaction-method summary` hands compaction back to Tau (a summarization
+  request is made and `details` is `None`);
+- method and cap written by slash commands are re-read after the session file is
+  closed and reopened.
+
+What the build taught us:
+
+1. **Entry types vs message types.** `MessageEntry`/`CustomEntry`/`CompactionEntry`
+   live in `tau_agent.session.entries`; the wire union lives in
+   `tau_agent.messages`. The first import failure mixed the two.
+2. **`notify` is `ExtensionAPI.notify`, not `ExtensionContext.notify`.** Fixing it
+   exposed a hole in the seam's public surface: `NotifyLevel` was not re-exported
+   from `tau_coding.extensions`, so an extension could not name the level —
+   patched in `tau@a1e5cfc`.
+3. **Slash handlers are synchronous, `append_entry` is not.** The settings commands
+   schedule the write on the running loop and keep a strong reference to the task
+   until it finishes (`_persist`); the tests poll storage briefly rather than
+   asserting immediately.
+4. **Tau's tool metadata differs from pi's and the observation parser must know
+   it.** `read` truncates with `[N more lines in file…]` / `[Showing lines …]`;
+   `bash` reports `details["exit_code"]` *and* appends `Command exited with code N`.
+   `signature.py` trusts the structured exit code and treats the text footer as
+   corroborating only when `is_error` or the structured code agrees, so a fixture
+   containing that sentence stays a fixture.
+5. **Cap rung 4 must not damage prose, and damage must be reported honestly.**
+   Removing non-user content can delete a whole `[Tools]:` row — content loss,
+   `trimmed`. A line that was stubbed and then dropped whole reports `trimmed`, not
+   `tightened`: the surviving damage, not the most invasive intermediate step.
+6. **Tiling is only provable with the extension's own record.** Tau omits
+   `replaces_entry_ids` when it is empty, and with a degenerate keep-recent budget
+   two compactions can overlap. Each checkpoint persists `covered`: the exact entry
+   ids its own span compressed.
+
+Next, in priority order: `context_lookup` (M4), the M2 verbatim self-test, `warn`
+prompting through `ExtensionUi` (M3), a real small-window run (M7), then M6.
