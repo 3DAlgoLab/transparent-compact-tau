@@ -15,7 +15,7 @@ from typing import Literal
 
 from tau_agent.session.entries import SessionEntry
 
-from transparent_compact.spans import CAP_NAMESPACE, METHOD_NAMESPACE, custom_state
+from .spans import CAP_NAMESPACE, METHOD_NAMESPACE, custom_state
 
 CompactionMethod = Literal["verbatim", "summary"]
 CapMode = Literal["on", "off", "warn"]

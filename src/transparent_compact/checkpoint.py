@@ -39,7 +39,7 @@ from tau_agent.session.entries import (
 )
 from tau_agent.types import JSONValue
 
-from transparent_compact.cap import (
+from .cap import (
     MIN_LINE_BUDGET_CHARS,
     SPAN_TRIMMED_ATTR,
     SPAN_TRIMMED_NOTE,
@@ -51,13 +51,13 @@ from transparent_compact.cap import (
     cap_spans,
     render_tool_line,
 )
-from transparent_compact.signature import (
+from .signature import (
     bash_output_label,
     checkpoint_path,
     tool_call_signature,
     tool_signature,
 )
-from transparent_compact.spans import (
+from .spans import (
     MECH_KIND,
     SPAN_DETAILS_VERSION,
     BaseBlock,
@@ -66,7 +66,7 @@ from transparent_compact.spans import (
     mech_details,
     span_to_json,
 )
-from transparent_compact.transcript import format_timestamp
+from .transcript import format_timestamp
 
 RECOVERY_HISTORY_NOTE = (
     "Compaction hides earlier details from your current view. The original conversation "

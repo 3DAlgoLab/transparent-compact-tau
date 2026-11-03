@@ -18,7 +18,7 @@ from tau_agent.session.entries import SessionEntry
 from tau_agent.tools import AgentTool, AgentToolResult
 from tau_agent.types import JSONValue
 
-from transparent_compact.transcript import Transcript, build_transcript, paginate_lines
+from .transcript import Transcript, build_transcript, paginate_lines
 
 # A recovery answer is a means to an answer, not a way to re-import the whole
 # session into context. Anything larger is reported as cut.

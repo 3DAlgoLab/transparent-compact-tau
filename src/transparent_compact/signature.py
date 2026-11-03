@@ -24,7 +24,7 @@ from collections.abc import Mapping
 
 from tau_agent.messages import TextContent, ToolResultMessage
 
-from transparent_compact.cap import (
+from .cap import (
     NORMAL_PREVIEW_CHARS,
     CommandPreview,
     ToolStub,

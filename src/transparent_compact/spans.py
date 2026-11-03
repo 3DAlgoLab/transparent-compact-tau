@@ -35,8 +35,8 @@ from tau_agent.session.entries import (
 )
 from tau_agent.types import JSONValue
 
-from transparent_compact.cap import CommandPreview, ToolLine, ToolStub
-from transparent_compact.transcript import format_timestamp
+from .cap import CommandPreview, ToolLine, ToolStub
+from .transcript import format_timestamp
 
 MECH_KIND = "mech-compact"
 SPAN_DETAILS_VERSION = 1

@@ -388,8 +388,45 @@ it: the window comes from provider settings, not a config field, and a marker
 placed in the *command* survives compaction as a tool-call signature, so the
 probe marker has to live in the output only.
 
-Next, in priority order: the M2 verbatim self-test, `warn` prompting through
-`ExtensionUi` (M3), a real TUI run against a small-context model (M7), then M6.
+### 2026-11-03 (evening) — first real install, and three traps it exposed
+
+The extension is now installed under `~/.tau/extensions/transparent-compact-tau`
+and loads under the installed `tau`. Getting there cost three findings, all worth
+keeping:
+
+1. **`uv tool install --force .` reused a cached wheel.** The installed tool still
+   had zero `SessionBeforeCompactEvent` after a "successful" reinstall, and the
+   installed copy's mtime proved it predated the seam work. Rebuilding a wheel by
+   hand (`uv build --wheel`) contained the seam, which localised the fault to the
+   tool env, not the build. `uv tool install --editable --force .` fixed it. A
+   quick identity check is now documented in the README:
+   `'session_before_compact' in tau_coding.extensions.api.LIFECYCLE_EVENT_TYPES`.
+2. **Directory extensions load under a synthesized module name.** Tau imports the
+   entry file with `spec_from_file_location(..., submodule_search_locations=[package_dir])`,
+   so sibling modules are reachable by **relative** import and the package's
+   `__init__.py` is never executed. Absolute `from transparent_compact.x import ...`
+   only worked in tests because the package happened to be editable-installed in
+   the venv; the real session failed with `No module named 'transparent_compact'`.
+   All intra-package imports are now relative, and the version string moved to
+   `version.py` because the entry point cannot reach `__init__.py`.
+3. **`-e`/`extension_paths` must name the directory, not the entry file.** Pointing
+   at `extension.py` gives `attempted relative import with no known parent
+   package`. `tests/test_extension.py` now loads the directory, which is what
+   `tau install` and `-e <dir>` actually do — a stronger test than the file form
+   it used before.
+
+Also added: a **sidebar section** (`context.ui.sidebar.set_section`) showing method,
+cap, checkpoint/span counts, and branch-vs-context entry counts, repainted on
+session start, after each checkpoint, and after a settings write completes. The
+content comes from `sidebar_lines(...)`, a pure function over branch entries, so it
+is tested without a frontend. Note `cap_settings` requires **both** a mode and a
+budget in one entry, and falls back to `warn 25%` otherwise — a setting payload
+with only a mode is silently not a setting.
+
+70 tests, ruff clean, strict mypy clean.
+
+Next, in priority order: a real TUI run against a small-context model (M7), the M2
+verbatim self-test, `warn` prompting through `ExtensionUi` (M3), then M6.
 
 ### 2026-11-03 — M1–M5 built, M4 partial
 

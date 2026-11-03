@@ -33,7 +33,12 @@ from tau_coding import session as coding_session_module
 from transparent_compact.spans import CAP_NAMESPACE, MECH_KIND, METHOD_NAMESPACE
 
 ROOT = Path(__file__).resolve().parents[1]
-EXTENSION = ROOT / "src" / "transparent_compact" / "extension.py"
+# A directory, not the entry file: Tau gives a directory extension a
+# `submodule_search_locations` package root, which is what makes its relative
+# sibling imports work. Pointing `-e` at `extension.py` directly fails with
+# "attempted relative import with no known parent package", so this test loads it
+# the way `tau install` and `-e <dir>` actually do.
+EXTENSION = ROOT
 
 SECRET = "first-secret-output"
 # Distinct from the command text: `printf '%s-%s\n' alpha omega` prints

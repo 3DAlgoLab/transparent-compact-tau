@@ -41,7 +41,7 @@ from tau_coding import load_provider_settings, resolve_provider_selection
 from tau_coding.extensions import ExtensionContext
 from tau_coding.provider_runtime import ClosableModelProvider, create_model_provider
 
-from transparent_compact.recovery import ReadEntries, recovery_tools
+from .recovery import ReadEntries, recovery_tools
 
 MAX_LOOKUP_TURNS = 6
 MAX_LOOKUP_TOOL_CALLS = 12

@@ -5,7 +5,7 @@ view of the raw branch) and the version string. Everything else is reached
 through the extension entry point in :mod:`transparent_compact.extension`.
 """
 
-from transparent_compact.transcript import (
+from .transcript import (
     HR,
     GrepHit,
     Transcript,
@@ -14,8 +14,7 @@ from transparent_compact.transcript import (
     build_transcript,
     paginate_lines,
 )
-
-__version__ = "0.1.0"
+from .version import __version__
 
 __all__ = [
     "HR",

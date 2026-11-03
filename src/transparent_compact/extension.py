@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Sequence
 from dataclasses import replace
 
 from tau_agent.session.entries import CompactionEntry, SessionEntry
@@ -22,14 +23,14 @@ from tau_coding.extensions import (
     ExtensionAPI,
     ExtensionCommandContext,
     ExtensionContext,
+    ExtensionError,
     MessageRenderOptions,
     NotifyLevel,
     SessionBeforeCompactEvent,
     SessionBeforeCompactResult,
 )
 
-from transparent_compact import __version__
-from transparent_compact.checkpoint import (
+from .checkpoint import (
     CheckpointResult,
     build_checkpoint,
     conversation_size,
@@ -37,9 +38,9 @@ from transparent_compact.checkpoint import (
     previous_file_lists,
     summarize_entries,
 )
-from transparent_compact.lookup import lookup_tool
-from transparent_compact.recovery import recovery_tools
-from transparent_compact.spans import (
+from .lookup import lookup_tool
+from .recovery import recovery_tools
+from .spans import (
     CAP_NAMESPACE,
     METHOD_NAMESPACE,
     collect_base_and_spans,
@@ -47,7 +48,7 @@ from transparent_compact.spans import (
     new_span_entries,
     turn_owner_ids,
 )
-from transparent_compact.state import (
+from .state import (
     CapMode,
     CapSettings,
     budget_chars,
@@ -56,13 +57,53 @@ from transparent_compact.state import (
     compaction_method,
     parse_cap_budget,
 )
-from transparent_compact.transcript import format_timestamp
+from .transcript import format_timestamp
+from .version import __version__
 
 EXTENSION_NAME = "transparent-compact"
 NOTICE_TYPE = "transparent-compact:notice"
 
 METHOD_USAGE = "/compaction-method [verbatim|summary]"
 CAP_USAGE = "/cap-compaction [on|warn|off|<n>%|<n>c|<n>t]"
+SIDEBAR_KEY = "state"
+
+
+def sidebar_lines(
+    entries: Sequence[SessionEntry],
+    context_window_tokens: int | None,
+    projected_entries: int,
+) -> list[str]:
+    """What compaction will do and what it has done, in four short lines.
+
+    A pure function over branch entries, so it is testable without a frontend and
+    narrow enough for the sidebar column. `/transparent-compact` is the full
+    picture; this is the always-visible summary that tells the reader which of the
+    two compaction behaviours is live right now.
+    """
+    branch = list(entries)
+    method = compaction_method(branch)
+    settings = cap_settings(branch)
+    compactions = [entry for entry in branch if isinstance(entry, CompactionEntry)]
+    mechanical = [entry for entry in compactions if mech_details(entry) is not None]
+    base, spans = collect_base_and_spans(branch)
+
+    if settings.mode == "off":
+        cap_line = "cap: off"
+    else:
+        unit = {"chars": "c", "tokens": "t", "percent": "%"}[settings.budget.unit]
+        cap_line = f"cap: {settings.mode} {settings.budget.value}{unit}"
+    if context_window_tokens:
+        cap_line += f" · window {context_window_tokens // 1000}k"
+
+    lines = [
+        f"method: {method}",
+        cap_line,
+        f"checkpoints: {len(compactions)} ({len(mechanical)} mechanical, {len(spans)} span(s))",
+        f"branch: {len(branch)} entries → {projected_entries} in context",
+    ]
+    if base is not None:
+        lines.append(f"base: {base.kind} summary carried forward")
+    return lines
 
 
 def render_notice(message: CustomMessageView, options: MessageRenderOptions) -> str:
@@ -79,6 +120,7 @@ class TransparentCompact:
         # Strong references: a fire-and-forget task with no reference can be
         # garbage collected before it writes its entry.
         self._pending: set[asyncio.Task[None]] = set()
+        self._sidebar_warned = False
 
         api.register_message_renderer(NOTICE_TYPE, render_notice)
         for tool in recovery_tools(self._branch):
@@ -105,6 +147,38 @@ class TransparentCompact:
             usage=CAP_USAGE,
         )
         api.on("session_before_compact", self._before_compact)
+        api.on("session_start", self._on_session_start)
+
+    # -- sidebar ------------------------------------------------------------
+
+    async def _on_session_start(self, event: object, context: ExtensionContext) -> None:
+        del event, context
+        self._refresh_sidebar()
+
+    def _refresh_sidebar(self) -> None:
+        """Repaint the sidebar section when the frontend has one.
+
+        The whole thing is guarded: a sidebar is decoration, so nothing in it may
+        be able to break a session. `ExtensionError` covers the stale-generation
+        case, which is exactly when a refresh tends to fire (right after a reload).
+        """
+        try:
+            context = self._api.context
+            if not context.ui.sidebar.supported:
+                return
+            context.ui.sidebar.set_section(
+                SIDEBAR_KEY,
+                title="transparent-compact",
+                content=sidebar_lines(
+                    list(context.entries),
+                    context.context_window_tokens,
+                    len(context.transcript),
+                ),
+            )
+        except ExtensionError as error:
+            if not self._sidebar_warned:
+                self._sidebar_warned = True
+                self._notify(f"could not update the sidebar: {error}", "warning")
 
     # -- state access -------------------------------------------------------
 
@@ -131,6 +205,10 @@ class TransparentCompact:
         failure = task.exception()
         if failure is not None:
             self._notify(f"could not save the setting: {failure}", "error")
+            return
+        # The setting only becomes visible once its entry is appended, so this is
+        # the first moment a repaint can show the new value.
+        self._refresh_sidebar()
 
     # -- the hook -----------------------------------------------------------
 
@@ -169,6 +247,7 @@ class TransparentCompact:
             return SessionBeforeCompactResult(cancel=True)
 
         self._report(built, context.context_window_tokens)
+        self._refresh_sidebar()
         return SessionBeforeCompactResult(summary=built.summary, details=built.details)
 
     async def _assemble(

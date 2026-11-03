@@ -38,11 +38,43 @@ Work in progress. `TODO.md` holds the milestone plan and the dated progress log;
   lookup is the only model call this extension makes, and the only tools it can
   use are those three — no filesystem, no writes, no recursion, and no session
   file of its own.
+- A **sidebar section** (`transparent-compact`) shows the live method, cap,
+  checkpoint counts, and how much of the branch the model is actually seeing. It
+  repaints on session start, after each checkpoint, and after a settings change.
 - `/transparent-compact` prints the live state — method, cap policy, branch vs
   projected entry counts, how many checkpoints are in the branch and how many
   spans can be re-rendered from their own records.
 - `/compaction-method summary` hands compaction back to Tau for this branch;
   `/cap-compaction off|warn|on|25%|80c|4t` sets the ceiling.
+
+## Installing
+
+```bash
+# 1. tau itself must carry the compaction seam (branch feat/session-before-compact)
+cd ../tau && uv tool install --editable --force .
+
+# 2. check which tau you are actually running — --version cannot tell you
+python -c "from tau_coding.extensions.api import LIFECYCLE_EVENT_TYPES as L; \
+print('seam:', 'session_before_compact' in L)"
+
+# 3. the extension: a snapshot copy under ~/.tau/extensions, re-run after edits
+tau install /home/j2y/dev-pi/transparent-compact-tau --force
+#    or run against the repo instead of a copy
+tau -e /home/j2y/dev-pi/transparent-compact-tau
+```
+
+Two rules that each cost a debugging session here:
+
+- **`uv tool install --force .` can serve a cached wheel.** When the whole point of
+  the install is that it carries unmerged source, use `--editable` (or
+  `--rebuild`). The install output looks identical either way, and `tau --version`
+  reports the same `0.4.9b3` either way; the import check above is the only quick
+  way to know.
+- **A directory extension is imported under a synthesized module name**, with the
+  package root as its submodule search path. The package's `__init__.py` never runs
+  in that path, so intra-package imports **must be relative**, and `-e` must point
+  at the **directory**, never at `extension.py` (a bare file fails with
+  "attempted relative import with no known parent package").
 
 ## Checks
 
