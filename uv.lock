@@ -706,7 +706,7 @@ wheels = [
 
 [[package]]
 name = "tau-ai"
-version = "0.4.9b3"
+version = "0.4.9rc1"
 source = { editable = "../tau" }
 dependencies = [
     { name = "anyio" },

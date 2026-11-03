@@ -50,7 +50,8 @@ Work in progress. `TODO.md` holds the milestone plan and the dated progress log;
 ## Installing
 
 ```bash
-# 1. tau itself must carry the compaction seam (branch feat/session-before-compact)
+# 1. tau itself must carry the compaction seam (branch feat/session-before-compact,
+#    version 0.4.9c1 — a released 0.4.9b3 does not have the seam)
 cd ../tau && uv tool install --editable --force .
 
 # 2. check which tau you are actually running — --version cannot tell you
@@ -79,11 +80,14 @@ may come from the wheel cache.
 
 Two rules that each cost a debugging session here:
 
-- **`uv tool install --force .` can serve a cached wheel.** When the whole point of
-  the install is that it carries unmerged source, use `--editable` (or
-  `--rebuild`). The install output looks identical either way, and `tau --version`
-  reports the same `0.4.9b3` either way; the import check above is the only quick
-  way to know.
+- **A branch that reuses a released version gets the released wheel.** `uv tool
+  install --force .` once "succeeded" while the installed copy predated the seam,
+  because the branch still declared `0.4.9b3`: same name, same version, same
+  artifact key, so the cache was reused and `tau --version` could not tell them
+  apart. The branch now declares **`0.4.9c1`** (`uv` normalizes it to `0.4.9rc1`;
+  PEP 440 reads `c1` as release-candidate 1, which sorts after `b3`), so a plain
+  install rebuilds and `tau --version` identifies the build. Until that version is
+  published, `tau-ai>=0.4.9c1` is satisfied only by this checkout.
 - **A directory extension is imported under a synthesized module name**, with the
   package root as its submodule search path. The package's `__init__.py` never runs
   in that path, so intra-package imports **must be relative**, and `-e` must point

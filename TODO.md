@@ -444,6 +444,17 @@ actually reports `has_session_before_compact_handlers` after `ExtensionRuntime.l
 (`uv tool install --editable --force .`), which also means editing `../tau` needs no
 reinstall and cannot serve a cached wheel.
 
+Then bumped `../tau` to **0.4.9c1** (tau commit `a2183f3`) to kill the cache trap at
+its root: the branch had been declaring the released `0.4.9b3`, so `uv` keyed the
+local build to the same artifact and reused the cached wheel. Proof that this was
+the cause, not a symptom: a plain `uv tool install --force .` after the bump
+installs `0.4.9rc1` and the installed `session.py` contains the seam (grep count
+3), where the same command before the bump produced a copy with zero occurrences.
+`uv` normalizes `0.4.9c1` to `0.4.9rc1` (PEP 440 treats `c` as an alias for `rc`,
+and `0.4.9b3 < 0.4.9c1 < 0.4.9`); `tau --version` prints `0.4.9c1` as declared.
+`scripts/check_install.py` now prints the version too, so one command identifies
+the install and checks the seam in the same breath.
+
 Two smaller observations from the same pass: `tau install .` copies the whole repo
 (only `__pycache__` differs between the repo and the installed copy, and Python
 revalidates those against source mtime+size), and `cap_settings` needs a mode **and**
