@@ -21,7 +21,13 @@ from tau_agent.messages import ToolCall
 from tau_agent.provider_events import AssistantDoneEvent, AssistantStartEvent, ToolCallEndEvent
 from tau_agent.session import CompactionEntry, CustomEntry, JsonlSessionStorage
 from tau_ai import FakeProvider
-from tau_coding import SUMMARIZATION_SYSTEM_PROMPT, CodingSession, CodingSessionConfig
+from tau_coding import (
+    SUMMARIZATION_SYSTEM_PROMPT,
+    CodingSession,
+    CodingSessionConfig,
+    OpenAICompatibleProviderConfig,
+    ProviderSettings,
+)
 from tau_coding import session as coding_session_module
 
 from transparent_compact.spans import CAP_NAMESPACE, MECH_KIND, METHOD_NAMESPACE
@@ -63,6 +69,9 @@ def _config(
     storage: JsonlSessionStorage,
     **overrides: object,
 ) -> CodingSessionConfig:
+    # Production behaviour is opt-in per test: most tests want auto-compaction off
+    # so they can trigger it themselves, while the small-window test wants it on.
+    auto_compact = overrides.pop("auto_compact_enabled", False)
     return CodingSessionConfig(
         provider=provider,
         model="fake",
@@ -71,7 +80,7 @@ def _config(
         cwd=tmp_path,
         extension_paths=(EXTENSION,),
         extensions_enabled=False,
-        auto_compact_enabled=False,
+        auto_compact_enabled=bool(auto_compact),
         **overrides,
     )
 
@@ -336,3 +345,83 @@ async def test_summary_method_hands_compaction_back_to_tau(
     compaction = (await _compactions(storage))[-1]
     assert compaction.details is None
     await session.aclose()
+
+
+SMALL_WINDOW_TOKENS = 60_000
+
+
+def _big_log_command(round_index: int) -> str:
+    """A command whose output crosses Tau's 50 KiB bash limit.
+
+    The marker is only in the *output*: the format string is `row%g-R0`, so a
+    concrete row like `row7-R0` exists in the transcript and nowhere in the
+    command. That is what lets this test prove the output left the projection —
+    a marker inside the command would survive as a tool-call signature.
+    """
+    return f'seq -f "row%g-R{round_index}-payload" 1 1999'
+
+
+GREP_ROW = "row7-R0-payload"
+
+
+@pytest.mark.anyio
+async def test_a_small_window_compacts_itself_on_defaults_without_a_model(tmp_path: Path) -> None:
+    """Production defaults, a 60k window, and nothing patched.
+
+    The other tests patch the keep-recent budget to force a tiny span. This one
+    uses Tau's real thresholds (60k window, so auto-compact at 43 616 estimated
+    tokens) and lets the session decide when to compact — what a small model
+    actually does.
+    """
+    rounds = 5
+    script: list[list[object]] = []
+    for index in range(rounds):
+        script.append(_bash_call(_big_log_command(index)))
+        script.append(_answer(f"Round {index} read."))
+    provider = FakeProvider(script)
+    storage = JsonlSessionStorage(tmp_path / "small-window.jsonl")
+    config = _config(
+        tmp_path,
+        provider,
+        storage,
+        auto_compact_enabled=True,
+        provider_name="local",
+        provider_settings=ProviderSettings(
+            default_provider="local",
+            providers=(
+                OpenAICompatibleProviderConfig(
+                    name="local",
+                    models=("fake",),
+                    default_model="fake",
+                    context_windows={"fake": SMALL_WINDOW_TOKENS},
+                ),
+            ),
+        ),
+    )
+    session = await CodingSession.load(config)
+
+    for index in range(rounds):
+        await _drain(session.prompt(f"Read round {index} and tell me its marker."))
+
+    # It compacted on its own, and never asked a model.
+    compactions = [
+        entry for entry in await storage.read_all() if isinstance(entry, CompactionEntry)
+    ]
+    assert compactions, "a 60k window should have compacted itself"
+    assert all(call[1] != SUMMARIZATION_SYSTEM_PROMPT for call in provider.calls)
+    for entry in compactions:
+        details = entry.details
+        assert isinstance(details, dict) and details.get("kind") == MECH_KIND, details
+
+    # The projection stayed bounded while the branch kept everything.
+    assert len(session.messages) < len(session.entries)
+
+    # The oldest round's output is out of the projection and still recoverable.
+    projected = "\n".join(getattr(message, "text", "") or "" for message in session.messages)
+    assert GREP_ROW not in projected, "the oldest tool output should have left context"
+    assert GREP_ROW in "\\n".join(
+        entry.message.text for entry in session.entries if hasattr(entry, "message")
+    )
+    tools = {tool.name: tool for tool in session.tools}
+    found = await tools["context_grep"].execute("t1", {"pattern": GREP_ROW})
+    assert GREP_ROW in found.text

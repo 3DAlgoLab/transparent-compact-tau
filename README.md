@@ -47,7 +47,7 @@ Work in progress. `TODO.md` holds the milestone plan and the dated progress log;
 ## Checks
 
 ```bash
-uv run pytest -q                      # 66 tests, incl. real CodingSession end-to-end
+uv run pytest -q                      # 67 tests, incl. real CodingSession end-to-end
 uv run ruff check src tests
 uv run ruff format --check src tests
 uv run mypy                           # strict

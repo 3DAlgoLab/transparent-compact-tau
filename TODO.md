@@ -377,8 +377,19 @@ Tau facts learned while wiring it (all cost a failing test):
    (`message.timestamp / 1000` on write, `* 1000` on read). A fixture using
    milliseconds makes `format_timestamp` raise `year 55840 is out of range`.
 
+Then a seventh end-to-end test with **no patched constants**: a `fake` model
+given a 60k window through `ProviderSettings` (`context_windows={"fake": 60_000}`,
+so Tau's threshold is 43 616 estimated tokens) and five rounds of ~50 KiB bash
+output. The session auto-compacts on its own, every compaction is
+`kind == "mech-compact"`, no request carries `SUMMARIZATION_SYSTEM_PROMPT`, the
+projection stays smaller than the branch, and the oldest round's output — absent
+from the projection — is still found by `context_grep`. Two Tau facts came out of
+it: the window comes from provider settings, not a config field, and a marker
+placed in the *command* survives compaction as a tool-call signature, so the
+probe marker has to live in the output only.
+
 Next, in priority order: the M2 verbatim self-test, `warn` prompting through
-`ExtensionUi` (M3), a real small-window run (M7), then M6.
+`ExtensionUi` (M3), a real TUI run against a small-context model (M7), then M6.
 
 ### 2026-11-03 — M1–M5 built, M4 partial
 
