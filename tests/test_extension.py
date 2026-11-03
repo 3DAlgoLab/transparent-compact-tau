@@ -175,6 +175,11 @@ async def test_recovery_tools_read_the_raw_branch_after_compaction(
 
     tools = {tool.name: tool for tool in session.tools}
     assert {"context_list_entries", "context_grep", "context_show_entry"} <= set(tools)
+    # The model-backed lookup is registered too, and it refuses an empty
+    # question before spending anything on building a provider.
+    assert "context_lookup" in tools
+    empty = await tools["context_lookup"].execute("t0", {})
+    assert "`question` is required" in empty.text
 
     listed = await tools["context_list_entries"].execute("t1", {})
     assert "raw branch" in listed.text

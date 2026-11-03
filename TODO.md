@@ -40,10 +40,10 @@ These are non-negotiable; every milestone is checked against them.
   `main` too).
 - [x] **M1–M5 built in this repo** (log in §7): `transcript.py`, `spans.py`,
       `signature.py`, `cap.py`, `state.py`, `checkpoint.py`, `recovery.py`,
-      `extension.py`; 60 tests (`tests/test_transcript.py`, `tests/test_checkpoint.py`,
+      `lookup.py`, `extension.py`; 66 tests (`tests/test_transcript.py`,
+      `tests/test_checkpoint.py`, `tests/test_lookup.py`,
       `tests/test_extension.py`), `ruff` clean, `mypy --strict` clean.
-- [ ] M4's `context_lookup` subagent, M6 (filters/fidelity), and the M2 verbatim
-      self-test are not written.
+- [ ] M6 (filters/fidelity) and the M2 verbatim self-test are not written.
 - [ ] Nothing has run in the real TUI yet: the end-to-end tests drive `CodingSession`
       headlessly, and the installed `tau` tool still lacks M0.
 
@@ -238,7 +238,7 @@ separately and reported separately. Budget comes from `context.context_window_to
 - [ ] Shortening note `**Note:** …` and presentation-loss accounting.
 - [ ] Budget from `context.context_window_tokens`; `off` = no cap.
 
-### M4 — Recovery tools (algorithm Part 5) — *partial*
+### M4 — Recovery tools (algorithm Part 5) — *done*
 
 As built (`recovery.py`, registered with `tau.register_tool`; parameters use Tau's
 snake_case): three deterministic tools over the **raw branch**, each bounded at
@@ -247,13 +247,16 @@ snake_case): three deterministic tools over the **raw branch**, each bounded at
 - [x] `context_list_entries(around_entry_id, window, include_tools)`.
 - [x] `context_grep(pattern, context_lines, max_matches, entry_id, literal, case_sensitive)`.
 - [x] `context_show_entry(entry_id, to_id, include_tools)` — whole raw entries, uncapped.
-- [ ] `context_lookup(question)` — subagent over Store A with **only** those three
-      tools, its own provider request loop (no `CodingSession`, no second session
-      file), max turns, abort-aware, consecutive-call cap, `lookupModel` override.
-      Copy Tau's provider idiom from `../tau-subagents`
-      (`load_provider_settings` → `resolve_provider_selection` →
-      `create_model_provider`); a child `CodingSession` would write its own session
-      file, which the algorithm explicitly rules out.
+- [x] `context_lookup(question)` (`lookup.py`) — a bounded, read-only subagent over
+      Store A. It runs **its own provider loop** (`stream_response` per turn), not a
+      child `CodingSession`, so it never writes a session file; its tool set is
+      exactly the three recovery tools, which also makes recursion impossible;
+      budgets are `MAX_LOOKUP_TURNS = 6` and `MAX_LOOKUP_TOOL_CALLS = 12`, and a
+      budget that runs out says so in the answer instead of posing as complete.
+      Provider comes from Tau's idiom (`load_provider_settings` →
+      `resolve_provider_selection` → `create_model_provider`) and is closed after
+      the answer. `MECH_COMPACT_LOOKUP_MODEL` overrides the model — the lookup reads
+      a lot of history, so a cheap large-window model is the right tool.
 - [x] Descriptions state: source = raw branch, entry-id provenance, "not a file",
       pagination note, and "prefer your own tools for the working tree".
 
@@ -331,6 +334,51 @@ snake_case): three deterministic tools over the **raw branch**, each bounded at
 ---
 
 ## 7. Progress log
+
+### 2026-11-03 (later) — `context_lookup`, and M4 is closed
+
+```
+uv run pytest -q                       66 passed
+uv run ruff check src tests            all checks passed
+uv run ruff format --check src tests   all formatted
+uv run mypy                            success, 10 files (strict)
+```
+
+`lookup.py` is the only place in this extension that talks to a model. Design
+points worth keeping:
+
+- **No child session.** A `CodingSession` child would write its own JSONL file for
+  a run the user never asked to keep, and the algorithm forbids a second history.
+  The subagent is a `stream_response` loop: assemble a message, run its tool
+  calls locally, append the results, repeat.
+- **Its tool set is the three recovery tools** — which both confines it to this
+  session's branch and makes recursion structurally impossible.
+- **Budgets are reported, not hidden.** Hitting the turn cap returns the partial
+  answer with `(turn budget (6) reached)`; hitting the tool-call cap feeds the
+  subagent an explicit "answer now" error result so the transcript stays
+  well-formed.
+- **Its answer is a claim.** The prompt demands entry ids; the tool description
+  demands the caller verify them with `context_show_entry` before repeating
+  anything as fact.
+
+Tau facts learned while wiring it (all cost a failing test):
+
+1. **`AgentTool.execute_fn` takes four arguments** —
+   `(tool_call_id, arguments, signal, on_update)`. A two-argument handler is a
+   `TypeError` at call time, not at registration.
+2. **`AgentToolResult` has no `is_error` field.** Tau flags a tool as failed only
+   when it *raises* (`loop._run_tool`), so a failure we want the main agent to
+   reason about ("the subagent could not start, use the deterministic tools") is
+   returned as `Error: …` text, deliberately not raised.
+3. **`AgentToolResult.content` must be built from `TextContent` blocks** for type
+   checking; the pydantic validator accepts a bare string at runtime, which hides
+   the mismatch until `mypy`.
+4. **Entry timestamps are seconds; message timestamps are milliseconds**
+   (`message.timestamp / 1000` on write, `* 1000` on read). A fixture using
+   milliseconds makes `format_timestamp` raise `year 55840 is out of range`.
+
+Next, in priority order: the M2 verbatim self-test, `warn` prompting through
+`ExtensionUi` (M3), a real small-window run (M7), then M6.
 
 ### 2026-11-03 — M1–M5 built, M4 partial
 

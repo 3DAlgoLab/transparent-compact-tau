@@ -21,7 +21,7 @@ Work in progress. `TODO.md` holds the milestone plan and the dated progress log;
 | `M1` Store A raw-branch transcript (`transparent_compact.transcript`) | implemented |
 | `M2` Mechanical checkpoint: span records, message compression, envelope | implemented |
 | `M3` Cap ladder and cap policy (`transparent_compact.cap`, `.state`) | implemented; `warn` notifies instead of prompting |
-| `M4` Recovery | `context_list_entries` / `context_grep` / `context_show_entry` implemented; `context_lookup` pending |
+| `M4` Recovery | implemented — `context_list_entries` / `context_grep` / `context_show_entry` plus the bounded `context_lookup` subagent |
 | `M5` Commands (`/transparent-compact`, `/compaction-method`, `/cap-compaction`) | implemented |
 | `M6` Turn filtering, fidelity ledger, aside-turns, auto-filter | not started |
 
@@ -32,8 +32,12 @@ Work in progress. `TODO.md` holds the milestone plan and the dated progress log;
   `<compacted-span>` blocks, `[User]:`/`[Agent]` prose verbatim, tool calls as
   signatures with a few conservative observations, and carried read/modified file
   lists.
-- The raw branch survives untouched, and three tools read it:
-  `context_list_entries`, `context_grep`, `context_show_entry`.
+- The raw branch survives untouched, and four tools read it:
+  `context_lookup` (a bounded read-only subagent that searches with the other
+  three), `context_list_entries`, `context_grep`, `context_show_entry`. The
+  lookup is the only model call this extension makes, and the only tools it can
+  use are those three — no filesystem, no writes, no recursion, and no session
+  file of its own.
 - `/transparent-compact` prints the live state — method, cap policy, branch vs
   projected entry counts, how many checkpoints are in the branch and how many
   spans can be re-rendered from their own records.
@@ -43,11 +47,21 @@ Work in progress. `TODO.md` holds the milestone plan and the dated progress log;
 ## Checks
 
 ```bash
-uv run pytest -q                      # 60 tests, incl. real CodingSession end-to-end
+uv run pytest -q                      # 66 tests, incl. real CodingSession end-to-end
 uv run ruff check src tests
 uv run ruff format --check src tests
 uv run mypy                           # strict
 ```
+
+## Configuration
+
+| setting | default | how to change it |
+| --- | --- | --- |
+| compaction method | `verbatim` | `/compaction-method summary` |
+| checkpoint cap | `warn` at 25% of the context window | `/cap-compaction on\|warn\|off\|<n>%\|<n>c\|<n>t` |
+| cap default from environment | — | `MECH_COMPACT_MAX_SUMMARY_CHARS`, `MECH_COMPACT_MAX_SUMMARY_PERCENT` |
+| lookup model | the session's model | `MECH_COMPACT_LOOKUP_MODEL` |
+| lookup budget | 6 turns, 12 tool calls | `MAX_LOOKUP_TURNS`, `MAX_LOOKUP_TOOL_CALLS` in `lookup.py` |
 
 ## The two stores
 

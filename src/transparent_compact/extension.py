@@ -37,6 +37,7 @@ from transparent_compact.checkpoint import (
     previous_file_lists,
     summarize_entries,
 )
+from transparent_compact.lookup import lookup_tool
 from transparent_compact.recovery import recovery_tools
 from transparent_compact.spans import (
     CAP_NAMESPACE,
@@ -82,6 +83,9 @@ class TransparentCompact:
         api.register_message_renderer(NOTICE_TYPE, render_notice)
         for tool in recovery_tools(self._branch):
             api.register_tool(tool)
+        # The only model call this extension makes. The subagent behind it can
+        # itself only use the three recovery tools above, over this branch.
+        api.register_tool(lookup_tool(self._branch, lambda: self._api.context))
         api.register_command(
             "transparent-compact",
             self._status_command,
