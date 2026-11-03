@@ -61,7 +61,21 @@ print('seam:', 'session_before_compact' in L)"
 tau install /home/j2y/dev-pi/transparent-compact-tau --force
 #    or run against the repo instead of a copy
 tau -e /home/j2y/dev-pi/transparent-compact-tau
+
+# 4. prove the pairing works before opening the TUI
+~/.local/share/uv/tools/tau-ai/bin/python scripts/check_install.py
 ```
+
+`scripts/check_install.py` is the tripwire. It loads the extension through
+`ExtensionRuntime.load` — the same path a session takes — and reports the three
+things that have each silently broken a session here: the missing seam, an
+extension that will not import, and an extension that loads but never subscribes
+the hook. Pass a path to check a specific copy (the repo, or
+`~/.tau/extensions/transparent-compact-tau`).
+
+Keep the **editable** tau install. Editing `../tau` then needs no reinstall at all,
+whereas a later `uv tool install .` replaces the editable install with a copy that
+may come from the wheel cache.
 
 Two rules that each cost a debugging session here:
 

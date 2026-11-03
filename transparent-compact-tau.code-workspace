@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../tau"
+		},
+		{
+			"path": "../../.tau"
+		}
+	],
+	"settings": {}
+}

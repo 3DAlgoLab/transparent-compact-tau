@@ -425,6 +425,30 @@ with only a mode is silently not a setting.
 
 70 tests, ruff clean, strict mypy clean.
 
+### 2026-11-03 (night) — the seam disappeared again, and why silence is the danger
+
+A fresh non-editable `uv tool install .` in `../tau` replaced the editable install
+with a copy that had **zero** `session_before_compact` occurrences (installed
+`tau_coding/session.py`, grep count 0) while the branch tree had it. The extension
+still loaded, because **Tau does not validate event names in `api.on(...)`** — a
+handler for an unknown event is stored and simply never fires. So the session looked
+healthy and stayed inert: no checkpoint, no override, model summarization as before.
+That is the worst failure mode this port has, and it is fixable only by checking.
+
+Hence `scripts/check_install.py`: run it with the interpreter behind the `tau` you
+are using and it asserts, in order, (1) the seam exists in that tau, (2) the
+extension imports under Tau's synthesized-module-name loader, (3) the runtime
+actually reports `has_session_before_compact_handlers` after `ExtensionRuntime.load`
+— the same load path a session takes. Both the repo copy and the
+`~/.tau/extensions` copy pass. Restored the editable install
+(`uv tool install --editable --force .`), which also means editing `../tau` needs no
+reinstall and cannot serve a cached wheel.
+
+Two smaller observations from the same pass: `tau install .` copies the whole repo
+(only `__pycache__` differs between the repo and the installed copy, and Python
+revalidates those against source mtime+size), and `cap_settings` needs a mode **and**
+a budget in one entry — a mode-only payload silently means "no setting".
+
 Next, in priority order: a real TUI run against a small-context model (M7), the M2
 verbatim self-test, `warn` prompting through `ExtensionUi` (M3), then M6.
 
