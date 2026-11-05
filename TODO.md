@@ -121,6 +121,28 @@ Tau change. **The installed `tau` tool is a non-editable install of `tau-ai
   (algorithm Part 4 "concurrency"). Tau's `append_entry` is async and the main thread is
   not blocked the same way; revisit when the picker lands (M6). Not needed for M0–M5.
 
+### G5. Replay-stable timestamps and a trustworthy `tokens_before` — *landed 2026-11-05 in `../tau`*
+
+- Observed: a real session died at 131,161 of 131,072 tokens with
+  `MAX_OVERFLOW_RECOVERIES` already spent, its third provider rejection in a row
+  unanswered. The proactive check had gone blind: the reloaded state estimated 97,349
+  against a threshold of 114,688 that the provider had crossed at 115,995. Full
+  diagnosis: `../tau/dev-notes/context-overflow-recovery.md`, fourth phase.
+- **Change 1** (`tau_agent/session/memory.py`, a storage concern like G2): the
+  compaction-summary and branch-summary rows synthesized during replay carry the entry's
+  timestamp instead of the replay clock — custom messages already did. Stamped at
+  replay time, the summary sorts after every message it covers, so
+  `_last_applicable_provider_usage` rejects every recorded usage and the estimate falls
+  back to chars/4: 97,349 measured against 119,194 actual.
+- **Change 2** (`tau_coding`): `provider_prompt_floor_tokens` keeps the largest provider
+  input side since the newest summarization boundary as a lower bound, and
+  `SessionBeforeCompactEvent.tokens_before` is now that stronger count rather than the
+  character estimate. A handler deciding whether this compaction is the last one its
+  session will ever get cannot be handed a number known to under-read the provider.
+- What the extension now relies on: `event.tokens_before` is a count, not an estimate,
+  and `spans.effective_threshold(event.context_window_tokens)` is the same line Tau
+  itself uses to decide a compaction is urgent.
+
 ### Explicitly *not* changing in Tau core
 
 - No `compaction_method` config, no core checkpoint builder, no `tau_agent` edits — all
@@ -211,7 +233,8 @@ covers the destructive case but not the explicit re-serialize-and-assert check.
 - [x] Span records for the replaced range only; base rebuilt from earlier mech entries
       (`CompactionEntry.details`); native Tau compaction entries stay opaque.
 - [x] Hook returns `{summary, details}`; cancels on a build failure for
-      manual/threshold and defers to Tau's summarizer on overflow.
+      manual/threshold and defers to Tau's summarizer on overflow — and, since
+      2026-11-05, for any window-critical compaction (see G5).
 - [ ] `[User]:` lines joined with `\n` like Pi; `[Agent]` prose verbatim; tool results
       and thinking dropped from Store B but never from Store A.
 - [ ] Header `**`-joined segments + `**Retained recent context below** — do not answer
@@ -334,6 +357,36 @@ snake_case): three deterministic tools over the **raw branch**, each bounded at
 ---
 
 ## 7. Progress log
+
+### 2026-11-05 — a session died with its recovery budget spent, and the hook helped
+
+`~/.tau/sessions/home-my-vault-20-ai_and_agent-bab571/96beebd123074b188f01a2e02d22bc43.jsonl`,
+897 lines, ends on a provider 400 at 131,161 of 131,072 tokens with no entry after it.
+Two overflow compactions (lines 626 and 786) had already spent Tau's
+`MAX_OVERFLOW_RECOVERIES`, so the third rejection had nothing to spend. Tau's half of the
+fix is in `../tau/dev-notes/context-overflow-recovery.md` (fourth phase); this repo's:
+
+- **A refusal is not always the extension's to make.** `_before_compact` cancelled on any
+  builder failure, which includes the one compaction standing between a session and a
+  rejected request. `spans.effective_threshold` now decides: at or past
+  `context_window - reserve`, the hook refuses to cancel and Tau's summarizer runs. The
+  same rule skips the `warn` cap modal — asking "shrink it or accept it?" while the
+  window is full invites an answer this extension cannot act on.
+- **A refusal has to leave a trace.** `notify` is UI-only, so a declined compaction was
+  invisible in the file. Every hook decision is now a `transparent-compact:decision`
+  custom entry (`outcome`, `reason`, `tokens_before`, `context_window_tokens`, `detail`),
+  reported by `/transparent-compact`, so a post-mortem can tell "Tau never asked" from
+  "the checkpoint was declined". G5 records the `tokens_before` change that makes that
+  field meaningful.
+- Tests: 73 (three new — a refused compaction records itself, a window-critical build
+  failure delegates to Tau, and the threshold boundary itself). The hook-level tests patch
+  the class **Tau loaded**, found via `sys.modules`: Tau imports a directory extension
+  under a synthesized module name, so patching the class this test file imports changes
+  nothing the session runs.
+- `../tau` bumped **`0.4.9.post1` → `0.4.9.post2`** for those core changes. The bump is the
+  point, not ceremony: the previous numbers were what the tool env already had, so a
+  reinstall of the fixed checkout could have re-used the cached wheel and re-installed the
+  broken accounting while reporting success. README §Installing states the current number.
 
 ### 2026-11-03 (later) — `context_lookup`, and M4 is closed
 

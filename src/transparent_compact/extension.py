@@ -18,6 +18,7 @@ from dataclasses import replace
 
 from tau_agent.session.entries import CompactionEntry, SessionEntry
 from tau_agent.types import JSONValue
+from tau_coding.context_window import auto_compaction_threshold_for_context_window
 from tau_coding.extensions import (
     CustomMessageView,
     ExtensionAPI,
@@ -42,6 +43,7 @@ from .lookup import lookup_tool
 from .recovery import recovery_tools
 from .spans import (
     CAP_NAMESPACE,
+    DECISION_NAMESPACE,
     METHOD_NAMESPACE,
     collect_base_and_spans,
     mech_details,
@@ -220,8 +222,15 @@ class TransparentCompact:
         """Replace Tau's model-written summary with a mechanical checkpoint.
 
         Returning `None` leaves Tau in charge; that is deliberate for the
-        `summary` method and for a build failure on the overflow path, where
-        refusing to compact would strand a session that is already too large.
+        `summary` method and for a build failure where refusing to compact would
+        strand a session that is already too large. A build failure on an ordinary
+        threshold compaction is refused instead — a verbatim checkpoint is the
+        point of this extension, and quietly writing a model summary instead would
+        be a silent downgrade of what the user asked for.
+
+        "Too large" is the exception that outranks that preference, and it is
+        spelled out in `_is_window_critical`: at a full context window a refused
+        compaction can end the session, so the downgrade is the cheaper loss.
         """
         branch = context.entries
         if compaction_method(list(branch)) == "summary":
@@ -232,23 +241,70 @@ class TransparentCompact:
             )
             return None
 
+        critical = self._is_window_critical(event)
         try:
             built = await self._assemble(event, context, branch)
         except Exception as exc:
-            if event.reason == "overflow":
+            detail = f"{type(exc).__name__}: {exc}"
+            if event.reason == "overflow" or critical:
                 self._notify(
                     f"checkpoint build failed ({exc}); falling back to Tau's model summary", "error"
                 )
+                await self._record_decision(event, outcome="delegated", detail=detail)
                 return None
             # For a manual or threshold compaction the user asked for a
             # verbatim checkpoint. Writing a model summary instead would be a
             # silent downgrade, so the compaction is refused instead.
             self._notify(f"checkpoint build failed ({exc}); compaction cancelled", "error")
+            await self._record_decision(event, outcome="cancelled", detail=detail)
             return SessionBeforeCompactResult(cancel=True)
 
         self._report(built, context.context_window_tokens)
         self._refresh_sidebar()
         return SessionBeforeCompactResult(summary=built.summary, details=built.details)
+
+    def _is_window_critical(self, event: SessionBeforeCompactEvent) -> bool:
+        """Return whether refusing this compaction risks ending the session.
+
+        Tau asks for a compaction once the context passes `window - reserve`, and
+        its recovery for an already-rejected request is capped. Past that line a
+        compaction is no longer a matter of taste: the next request is at risk, and
+        a refusal that leaves the context where it was can be the last thing a
+        session does. A verbatim checkpoint is worth insisting on right up to that
+        point, and not one byte past it.
+        """
+        threshold = auto_compaction_threshold_for_context_window(event.context_window_tokens)
+        return threshold is not None and event.tokens_before >= threshold
+
+    async def _record_decision(
+        self,
+        event: SessionBeforeCompactEvent,
+        *,
+        outcome: str,
+        detail: str,
+    ) -> None:
+        """Record in the session why a compaction was refused or handed back.
+
+        A refused compaction is otherwise invisible: the notification exists only
+        in the UI, and the boundary stays exactly where it was, so a session that
+        runs out of context later leaves nothing in its file to explain why no
+        compaction happened. Awaited rather than fired off in a task, because the
+        record is only worth having if it is durable before the next request.
+        """
+        try:
+            await self._api.append_entry(
+                DECISION_NAMESPACE,
+                {
+                    "outcome": outcome,
+                    "reason": event.reason,
+                    "tokens_before": event.tokens_before,
+                    "context_window_tokens": event.context_window_tokens,
+                    "detail": detail,
+                    "at": format_timestamp(time.time()),
+                },
+            )
+        except Exception as exc:  # a lost audit note must not cost a compaction
+            self._notify(f"could not record the compaction decision: {exc}", "warning")
 
     async def _assemble(
         self,
@@ -300,7 +356,17 @@ class TransparentCompact:
             branch=entries,
         )
         if limit is not None and settings.mode == "warn" and overhead + line_chars > limit:
-            limit = await self._confirm_cap(context, settings, limit, overhead + line_chars)
+            if self._is_window_critical(event):
+                # A modal at this point parks a provider request behind a
+                # question, and the request it is protecting is the one that may
+                # already be rejected. Trim, and say so out loud instead.
+                self._notify(
+                    f"cap trimming the checkpoint to {limit:,} chars without asking: "
+                    "the context is at the window",
+                    "warning",
+                )
+            else:
+                limit = await self._confirm_cap(context, settings, limit, overhead + line_chars)
 
         return build_checkpoint(
             reason=event.reason,
@@ -457,6 +523,7 @@ def setup(tau: ExtensionAPI) -> None:
 
 __all__ = [
     "CAP_NAMESPACE",
+    "DECISION_NAMESPACE",
     "EXTENSION_NAME",
     "METHOD_NAMESPACE",
     "NOTICE_TYPE",

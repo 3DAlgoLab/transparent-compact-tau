@@ -12,6 +12,7 @@ a JSONL session on disk, then asks the questions the design cares about:
 """
 
 import asyncio
+import sys
 import time
 from pathlib import Path
 
@@ -29,8 +30,15 @@ from tau_coding import (
     ProviderSettings,
 )
 from tau_coding import session as coding_session_module
+from tau_coding.extensions import SessionBeforeCompactEvent
 
-from transparent_compact.spans import CAP_NAMESPACE, MECH_KIND, METHOD_NAMESPACE
+from transparent_compact.extension import TransparentCompact
+from transparent_compact.spans import (
+    CAP_NAMESPACE,
+    DECISION_NAMESPACE,
+    MECH_KIND,
+    METHOD_NAMESPACE,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 # A directory, not the entry file: Tau gives a directory extension a
@@ -430,3 +438,138 @@ async def test_a_small_window_compacts_itself_on_defaults_without_a_model(tmp_pa
     tools = {tool.name: tool for tool in session.tools}
     found = await tools["context_grep"].execute("t1", {"pattern": GREP_ROW})
     assert GREP_ROW in found.text
+
+
+def _loaded_extension_classes() -> list[type]:
+    """Every `TransparentCompact` class this process has loaded.
+
+    Tau imports a directory extension under a synthetic module name, so the class
+    behind a live session is a different object from the one this test file can
+    import, and a different object again for every session that loads one. Patching
+    the imported class changes nothing the session will do, so patch them all.
+    """
+    found: list[type] = []
+    for name, module in sys.modules.items():
+        if name == "transparent_compact.extension":
+            continue
+        loaded = getattr(module, "TransparentCompact", None)
+        if isinstance(loaded, type) and not any(loaded is other for other in found):
+            found.append(loaded)
+    if not found:
+        raise AssertionError("the extension is not loaded in this process")
+    return found
+
+
+async def _assemble_fails(self: object, *args: object, **kwargs: object) -> None:
+    """Stand in for a checkpoint build that dies; the reason does not matter here."""
+    raise RuntimeError("simulated checkpoint build failure")
+
+
+@pytest.mark.anyio
+async def test_a_build_failure_with_room_left_refuses_the_compaction(
+    tiny_keep_window: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A refused checkpoint is still refused, but it leaves a trace this time.
+
+    Below the window the choice is the user's: this extension exists to write a
+    verbatim checkpoint, and quietly writing a model summary instead would be a
+    silent downgrade. The refusal used to exist only as a toast in the UI, so a
+    session that later ran out of context had nothing in its file explaining that
+    a compaction had been offered and declined.
+    """
+    storage = JsonlSessionStorage(tmp_path / "refused.jsonl")
+    provider = FakeProvider([_answer("Answer.")])
+    session = await CodingSession.load(_config(tmp_path, provider, storage))
+    await _drain(session.prompt("Earlier work."))
+
+    for loaded in _loaded_extension_classes():
+        monkeypatch.setattr(loaded, "_assemble", _assemble_fails)
+
+    with pytest.raises(ValueError, match="cancelled by an extension"):
+        await session.compact_detailed()
+
+    assert await _compactions(storage) == []
+    assert all(call[1] != SUMMARIZATION_SYSTEM_PROMPT for call in provider.calls), (
+        "a refused compaction must not spend a summarization request"
+    )
+    notes = await _settings(storage, DECISION_NAMESPACE)
+    assert [note["outcome"] for note in notes] == ["cancelled"]
+    assert "simulated checkpoint build failure" in str(notes[0]["detail"])
+    await session.aclose()
+
+
+# 17 000 - 16 384: the auto-compaction threshold is one token in, so any compaction
+# of this session counts as one standing between the session and a rejected request.
+CRITICAL_WINDOW_TOKENS = 17_000
+
+
+@pytest.mark.anyio
+async def test_a_build_failure_at_the_window_hands_compaction_back_to_tau(
+    tiny_keep_window: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """At a full window a verbatim checkpoint is not worth a dead session.
+
+    Tau's recovery for an already-rejected request is capped, so a compaction
+    refused at the window can be the last thing a session does. This is the one
+    case where the extension is obliged to stand down and let Tau's summarizer
+    shrink the context, whatever the checkpoint would have looked like.
+    """
+    storage = JsonlSessionStorage(tmp_path / "delegated.jsonl")
+    provider = FakeProvider([_answer(LONG_USER_TEXT), _answer("MODEL SUMMARY FROM TAU")])
+    config = _config(
+        tmp_path,
+        provider,
+        storage,
+        provider_name="local",
+        provider_settings=ProviderSettings(
+            default_provider="local",
+            providers=(
+                OpenAICompatibleProviderConfig(
+                    name="local",
+                    models=("fake",),
+                    default_model="fake",
+                    context_windows={"fake": CRITICAL_WINDOW_TOKENS},
+                ),
+            ),
+        ),
+    )
+    session = await CodingSession.load(config)
+    await _drain(session.prompt(LONG_USER_TEXT))
+
+    for loaded in _loaded_extension_classes():
+        monkeypatch.setattr(loaded, "_assemble", _assemble_fails)
+    result = await session.compact_detailed()
+
+    assert "MODEL SUMMARY FROM TAU" in result.summary
+    compaction = (await _compactions(storage))[-1]
+    assert compaction.details is None, "a Tau summarizer wrote this, not a checkpoint"
+    notes = await _settings(storage, DECISION_NAMESPACE)
+    assert [note["outcome"] for note in notes] == ["delegated"]
+    assert notes[0]["context_window_tokens"] == CRITICAL_WINDOW_TOKENS
+    await session.aclose()
+
+
+def _threshold_event(tokens_before: int, context_window_tokens: int) -> SessionBeforeCompactEvent:
+    return SessionBeforeCompactEvent(
+        reason="threshold",
+        first_kept_entry_id="entry-2",
+        replaced_entry_ids=("entry-1",),
+        messages_to_summarize=(),
+        tokens_before=tokens_before,
+        context_window_tokens=context_window_tokens,
+    )
+
+
+def test_a_compaction_is_window_critical_only_past_the_reserve() -> None:
+    # The predicate reads the event and nothing else, so the unbound call is enough
+    # to pin where the line sits: Tau's own threshold for the same window.
+    critical = TransparentCompact._is_window_critical  # noqa: SLF001 - the test pins the line Tau draws
+
+    assert critical(object(), _threshold_event(114_687, 131_072)) is False
+    assert critical(object(), _threshold_event(114_688, 131_072)) is True
+    assert critical(object(), _threshold_event(115_000, 131_072)) is True
+    assert critical(object(), _threshold_event(115_000, 0)) is False

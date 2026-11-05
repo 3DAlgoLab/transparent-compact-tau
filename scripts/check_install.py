@@ -44,7 +44,8 @@ def main() -> int:
 
     print(f"tau_coding: {tau_coding.__file__}")
     # A branch build and a released wheel used to be indistinguishable: both said
-    # 0.4.9b3. The branch now carries 0.4.9c1, so this line identifies the install.
+    # 0.4.9b3. The branch carries its own versions and bumps them when behaviour
+    # changes (0.4.9c1, 0.4.9.post1, 0.4.9.post2), so this line identifies the install.
     print(f"tau version: {tau_coding.__version__}")
     if "session_before_compact" not in LIFECYCLE_EVENT_TYPES:
         return fail(

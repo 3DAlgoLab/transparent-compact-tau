@@ -42,6 +42,7 @@ MECH_KIND = "mech-compact"
 SPAN_DETAILS_VERSION = 1
 METHOD_NAMESPACE = "transparent-compact:compaction-method"
 CAP_NAMESPACE = "transparent-compact:cap-compaction"
+DECISION_NAMESPACE = "transparent-compact:compaction-decision"
 
 
 @dataclass(frozen=True)
@@ -342,6 +343,7 @@ def is_tool_only_assistant(message: AssistantMessage) -> bool:
 
 __all__ = [
     "CAP_NAMESPACE",
+    "DECISION_NAMESPACE",
     "MECH_KIND",
     "METHOD_NAMESPACE",
     "SPAN_DETAILS_VERSION",
