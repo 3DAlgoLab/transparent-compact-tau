@@ -10,7 +10,7 @@ module-root = "src"
 
 [project]
 name = "transparent-compact-tau"
-version = "0.1.0"
+version = "0.1.1"
 description = "Deterministic, losslessly recoverable context compaction for Tau (port of transparent-compact for pi)."
 readme = "README.md"
 license = "MIT"

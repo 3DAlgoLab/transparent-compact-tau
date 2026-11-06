@@ -706,7 +706,7 @@ wheels = [
 
 [[package]]
 name = "tau-ai"
-version = "0.4.9.post2"
+version = "0.4.9.post3"
 source = { editable = "../tau" }
 dependencies = [
     { name = "anyio" },
@@ -759,7 +759,7 @@ wheels = [
 
 [[package]]
 name = "transparent-compact-tau"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "tau-ai" },

@@ -6,4 +6,4 @@ the package's `__init__.py` is **not** executed in that path. Anything the entry
 point needs must come from a sibling module reached by a relative import.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

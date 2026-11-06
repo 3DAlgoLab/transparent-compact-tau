@@ -35,9 +35,15 @@ Work in progress. `TODO.md` holds the milestone plan and the dated progress log;
 - A checkpoint that cannot be built is **refused**, never quietly replaced by a
   model summary — unless that compaction is already the one standing between the
   session and a rejected request, where a session outranks its checkpoint and Tau's
-  summarizer takes over. Both choices are recorded in the session as a
-  `transparent-compact:decision` entry and listed by `/transparent-compact`, so a
-  post-mortem can tell "Tau never asked" from "the checkpoint was declined".
+  summarizer takes over. A span with **nothing left to fold** is decided the same way
+  instead of counting as a build failure: every entry it covers already sits inside a
+  stored span, so its only row is an earlier checkpoint, and re-summarizing a
+  checkpoint spends a model call to lose text without losing tokens. Cancelled below
+  the window, handed to Tau at it.
+- Both choices are recorded in the session as a `transparent-compact:decision` entry
+  (`cause` says whether a build died or the span was already folded) and listed by
+  `/transparent-compact`, so a post-mortem can tell "Tau never asked" from "the
+  checkpoint was declined".
 - The raw branch survives untouched, and four tools read it:
   `context_lookup` (a bounded read-only subagent that searches with the other
   three), `context_list_entries`, `context_grep`, `context_show_entry`. The
@@ -57,7 +63,7 @@ Work in progress. `TODO.md` holds the milestone plan and the dated progress log;
 
 ```bash
 # 1. tau itself must carry the compaction seam (branch feat/session-before-compact,
-#    version 0.4.9.post2 — no released tau (0.4.9b3, 0.4.9) has the seam)
+#    version 0.4.9.post3 — no released tau (0.4.9b3, 0.4.9) has the seam)
 cd ../tau && uv tool install --editable --force .
 
 # 2. check which tau you are actually running — --version cannot tell you
@@ -93,11 +99,14 @@ Two rules that each cost a debugging session here:
   apart. The branch therefore carries its own versions, and bumps them whenever its
   behaviour changes: `0.4.9c1` first (`uv` normalizes it to `0.4.9rc1`; PEP 440 reads
   `c` as the alias of `rc`), then `0.4.9.post1` for the request-boundary compaction
-  seam, then **`0.4.9.post2`** for replay-stable compaction timestamps and the
-  provider-reported context floor. PEP 440 orders them
-  `0.4.9b3 < 0.4.9rc1 < 0.4.9 < 0.4.9.post1 < 0.4.9.post2`, so a plain install
-  rebuilds and `tau --version` identifies the build. None of those are published,
-  so a version that high is satisfied only by this checkout.
+  seam, then `0.4.9.post2` for replay-stable compaction timestamps and the
+  provider-reported context floor, then **`0.4.9.post3`** for a compaction that stops
+  pricing and stops stacking the prefix it already replaced — this extension's "hand
+  the fold to Tau" path depends on it, because a Tau summary that lands *beside* the
+  checkpoint it replaced shrinks nothing. PEP 440 orders them
+  `0.4.9b3 < 0.4.9rc1 < 0.4.9 < 0.4.9.post1 < 0.4.9.post2 < 0.4.9.post3`, so a plain
+  install rebuilds and `tau --version` identifies the build. None of those are
+  published, so a version that high is satisfied only by this checkout.
 - **A directory extension is imported under a synthesized module name**, with the
   package root as its submodule search path. The package's `__init__.py` never runs
   in that path, so intra-package imports **must be relative**, and `-e` must point
@@ -107,7 +116,7 @@ Two rules that each cost a debugging session here:
 ## Checks
 
 ```bash
-uv run pytest -q                      # 73 tests, incl. real CodingSession end-to-end
+uv run pytest -q                      # 75 tests, incl. real CodingSession end-to-end
 uv run ruff check src tests
 uv run ruff format --check src tests
 uv run mypy                           # strict

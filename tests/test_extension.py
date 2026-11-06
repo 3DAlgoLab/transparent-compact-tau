@@ -573,3 +573,90 @@ def test_a_compaction_is_window_critical_only_past_the_reserve() -> None:
     assert critical(object(), _threshold_event(114_688, 131_072)) is True
     assert critical(object(), _threshold_event(115_000, 131_072)) is True
     assert critical(object(), _threshold_event(115_000, 0)) is False
+
+
+@pytest.mark.anyio
+async def test_a_fold_with_nothing_left_to_cover_is_cancelled(
+    tiny_keep_window: None,
+    tmp_path: Path,
+) -> None:
+    """A second compaction with no new work has nothing to fold, and says so.
+
+    Once the kept boundary stops moving, the span Tau offers for the next fold is the
+    previous checkpoint itself. Stored spans are re-rendered from their covered
+    entries and a checkpoint is never re-summarized, so there is nothing to build —
+    and handing that span to Tau's summarizer spends a model call on a context that
+    was never near its window. A session on 2026-11-05 did exactly that twice: 24,045
+    tokens, then 56,240, for a context measuring 51,476 against a 131,072 window.
+    """
+    storage = JsonlSessionStorage(tmp_path / "nothing-to-fold.jsonl")
+    # Two scripted turns only: a summarization request would find the provider
+    # exhausted, which is the assertion.
+    provider = FakeProvider([_bash_call(CMD), _answer("Done.")])
+    session = await CodingSession.load(_config(tmp_path, provider, storage))
+    await _drain(session.prompt("Run that command and report."))
+
+    first = await session.compact_detailed()
+    with pytest.raises(ValueError, match="cancelled by an extension"):
+        await session.compact_detailed()
+
+    assert len(provider.calls) == 2, "a fold with nothing to fold must not spend a model call"
+    compactions = await _compactions(storage)
+    assert len(compactions) == 1, "a cancelled fold writes no compaction entry"
+    assert compactions[0].summary == first.summary
+    # The first checkpoint still stands in for the work it covered.
+    assert "Run that command and report." in "\n".join(message.text for message in session.messages)
+
+    notes = await _settings(storage, DECISION_NAMESPACE)
+    assert [(note["outcome"], note["cause"]) for note in notes] == [
+        ("cancelled", "nothing-to-fold")
+    ]
+    assert "no uncompacted entries" in str(notes[0]["detail"])
+    await session.aclose()
+
+
+def _window_is_full(self: object, event: object) -> bool:
+    """Stand in for a session whose measured context sits at the window."""
+    del self, event
+    return True
+
+
+@pytest.mark.anyio
+async def test_a_fold_with_nothing_left_to_cover_at_a_full_window_hands_the_fold_to_tau(
+    tiny_keep_window: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """At a full window, re-summarizing an old checkpoint still beats refusing to shrink.
+
+    The cancellation above is a preference about fidelity, and preferences stop
+    mattering when the next request is at risk: Tau's summarizer can rewrite the
+    older checkpoint shorter, so the extension stands down exactly as it does for a
+    build failure. The summary it writes must also *replace* the checkpoint rather
+    than sit beside it, which is what the recorded replaced-entry ids are for.
+    """
+    storage = JsonlSessionStorage(tmp_path / "nothing-to-fold-critical.jsonl")
+    provider = FakeProvider([_bash_call(CMD), _answer("Done."), _answer("MODEL SUMMARY AGAIN")])
+    session = await CodingSession.load(_config(tmp_path, provider, storage))
+    await _drain(session.prompt("Run that command and report."))
+    first = await session.compact_detailed()
+
+    for loaded in _loaded_extension_classes():
+        monkeypatch.setattr(loaded, "_is_window_critical", _window_is_full)
+
+    second = await session.compact_detailed()
+
+    assert second.summary == "MODEL SUMMARY AGAIN"
+    assert any(call[1] == SUMMARIZATION_SYSTEM_PROMPT for call in provider.calls)
+    compactions = await _compactions(storage)
+    assert len(compactions) == 2
+
+    rendered = "\n".join(message.text for message in session.messages)
+    assert "MODEL SUMMARY AGAIN" in rendered
+    assert first.summary not in rendered, "the retired checkpoint must leave the context"
+
+    notes = await _settings(storage, DECISION_NAMESPACE)
+    assert [(note["outcome"], note["cause"]) for note in notes] == [
+        ("delegated", "nothing-to-fold")
+    ]
+    await session.aclose()

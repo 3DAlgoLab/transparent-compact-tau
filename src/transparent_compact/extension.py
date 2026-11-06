@@ -114,6 +114,18 @@ def render_notice(message: CustomMessageView, options: MessageRenderOptions) -> 
     return f"[transparent-compact] {message.content}"
 
 
+class NothingToFold(Exception):
+    """The span Tau offered holds nothing this extension has not already checkpointed.
+
+    A kept boundary that has not moved since the last compaction leaves a replaced
+    span of exactly one row: the previous checkpoint. Stored spans are re-rendered
+    from their covered entries and a checkpoint is never re-summarized, so a
+    checkpoint built here would copy text without giving anything back. This is an
+    expected condition, not a build failure, and `_before_compact` decides what it
+    means rather than letting it fall into the failure path.
+    """
+
+
 class TransparentCompact:
     """Wires the deterministic checkpoint into a running Tau session."""
 
@@ -230,7 +242,10 @@ class TransparentCompact:
 
         "Too large" is the exception that outranks that preference, and it is
         spelled out in `_is_window_critical`: at a full context window a refused
-        compaction can end the session, so the downgrade is the cheaper loss.
+        compaction can end the session, so the downgrade is the cheaper loss. That
+        exception only buys anything when something can be summarized at all, so a
+        span with nothing left to fold (`NothingToFold`) is cancelled below the
+        window, and handed to Tau's summarizer only once the window is full.
         """
         branch = context.entries
         if compaction_method(list(branch)) == "summary":
@@ -244,6 +259,34 @@ class TransparentCompact:
         critical = self._is_window_critical(event)
         try:
             built = await self._assemble(event, context, branch)
+        except NothingToFold as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+            if critical:
+                # At a full window the lossy option still beats the fatal one: Tau's
+                # summarizer can rewrite the older checkpoint shorter, and a session
+                # that refuses to shrink at this point can end on a rejected request.
+                self._notify(
+                    "nothing left to checkpoint; falling back to Tau's model summary", "warning"
+                )
+                await self._record_decision(
+                    event, outcome="delegated", detail=detail, cause="nothing-to-fold"
+                )
+                return None
+            # Below the window there is nothing to gain: the recent entries this
+            # compaction kept are the whole context, and they are kept by design.
+            # Delegating would spend a summarizer call to rewrite an older
+            # checkpoint, which is what a session on 2026-11-05 did twice — 24,045
+            # tokens and then 56,240 — for a context that was not near its window.
+            self._notify(
+                f"nothing left to checkpoint ({event.tokens_before} of "
+                f"{event.context_window_tokens} tokens sits in the kept recent window); "
+                "compaction cancelled",
+                "warning",
+            )
+            await self._record_decision(
+                event, outcome="cancelled", detail=detail, cause="nothing-to-fold"
+            )
+            return SessionBeforeCompactResult(cancel=True)
         except Exception as exc:
             detail = f"{type(exc).__name__}: {exc}"
             if event.reason == "overflow" or critical:
@@ -282,6 +325,7 @@ class TransparentCompact:
         *,
         outcome: str,
         detail: str,
+        cause: str = "build-failure",
     ) -> None:
         """Record in the session why a compaction was refused or handed back.
 
@@ -296,6 +340,7 @@ class TransparentCompact:
                 DECISION_NAMESPACE,
                 {
                     "outcome": outcome,
+                    "cause": cause,
                     "reason": event.reason,
                     "tokens_before": event.tokens_before,
                     "context_window_tokens": event.context_window_tokens,
@@ -312,7 +357,11 @@ class TransparentCompact:
         context: ExtensionContext,
         branch: tuple[SessionEntry, ...],
     ) -> CheckpointResult:
-        """Build the checkpoint: inherited base, re-rendered spans, one new span."""
+        """Build the checkpoint: inherited base, re-rendered spans, one new span.
+
+        Raises `NothingToFold` when the offered span contains only entries earlier
+        checkpoints already cover, and propagates any build failure as-is.
+        """
         entries = list(branch)
         base, prior_spans = collect_base_and_spans(entries)
         covered = new_span_entries(
@@ -322,7 +371,7 @@ class TransparentCompact:
         )
         if not covered:
             msg = "no uncompacted entries inside the replaced span"
-            raise ValueError(msg)
+            raise NothingToFold(msg)
 
         now = format_timestamp(time.time())
         lines = summarize_entries(covered, cwd=str(context.cwd), owners=turn_owner_ids(entries))

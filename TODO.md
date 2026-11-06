@@ -358,6 +358,50 @@ snake_case): three deterministic tools over the **raw branch**, each bounded at
 
 ## 7. Progress log
 
+### 2026-11-06 — two folds of a span that held nothing, and the numbers that were stale
+
+`~/.tau/sessions/home-dev-pi-harness2-fce4b6/4b94e0f8985b4e3da43261538143c101.jsonl`,
+131,072-token window. A mechanical checkpoint (54,445 chars) at 12:13:02; a hook call
+12:15:48 that died on `no uncompacted entries inside the replaced span` with
+`tokens_before = 115209` — the prompt of a request made *before* that checkpoint existed;
+a model-written summary at 12:18:16 costing 24,045 tokens, on a context the provider
+priced at **51,476** five minutes later; and the same exchange at 13:21 costing 56,240.
+The session still carries both summaries today: 71,539 characters of context, ~18k of it
+already replaced, above a live prompt of 39,006 tokens.
+
+Both halves were broken, and this repo's half was the more honest one:
+
+- **Tau** (fixed in `../tau` **`0.4.9.post3`**, `../tau/dev-notes/compaction-pressure-and-retired-summaries.md`):
+  `provider_prompt_floor_tokens` broke its scan at the compaction *row*, and replay puts
+  that row in *front* of the entries it replaced — so the retained responses handed back
+  pre-compaction prompts, the floor is a maximum, and every pressure check after 12:13
+  read a full window that had 51k tokens in it. And `CompactionEntry.replaces_entry_ids`
+  was written empty, so a fold starting inside a previous fold's kept window replayed both
+  summaries: the context grew at every compaction. `_is_window_critical` then read the
+  phantom 115,209 and this extension stood down for a session that was not at risk.
+- **Here**: "nothing to fold" was travelling through the *build-failure* path, where
+  window-critical means delegate. It is now its own condition (`NothingToFold`), decided
+  rather than caught: cancelled below the window with the pressure spelled out in the
+  notification, delegated at it — a lossy re-summary of an old checkpoint still beats a
+  session that refuses to shrink. The decision entry gains `cause`
+  (`build-failure` / `nothing-to-fold`) so a post-mortem can tell a dying builder from an
+  already-folded span; the `outcome` vocabulary is unchanged.
+- Same invariant as §7 lesson 6 ("tiling is only provable with the extension's own
+  record"), seen from the failing side: an empty `covered` set is not an error, it is the
+  tiling proof reporting that nothing new arrived.
+- Tests: 75 (two new — a second compaction with no new work cancels without spending a
+  model call and records `nothing-to-fold`; the same fold at a full window hands the fold
+  to Tau and asserts the model summary *replaced* the checkpoint rather than stacking
+  beside it, which is the new Tau behaviour under test from this side).
+- `0.1.0 → 0.1.1` (`pyproject.toml` and `version.py` had drifted: the manifest said
+  0.1.1, the module said 0.1.0). README §Installing now requires `0.4.9.post3`.
+- **Still open, not fixed by guesswork**: that 13:21 compaction was appended at
+  `parent = c7d7f124…` (an entry from 00:24) with `first_kept = c57d11ee…` (an entry the
+  live context no longer held), and the next live message parented to the entry *before*
+  it. 56,240 tokens for an entry that is off the live branch and changed nothing the model
+  saw. One writer's tip was 153, another's was 282; nothing in the entry shape separates a
+  stale writer from an intentional navigation. See the tau note's "What is still open".
+
 ### 2026-11-05 — a session died with its recovery budget spent, and the hook helped
 
 `~/.tau/sessions/home-my-vault-20-ai_and_agent-bab571/96beebd123074b188f01a2e02d22bc43.jsonl`,
